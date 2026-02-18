@@ -1,0 +1,19 @@
+# Environment
+settings/.env
+env/
+venv/
+*.pyc
+__pycache__/
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Media files
+media/
