@@ -17,3 +17,10 @@ logs/
 
 # Media files
 media/
+
+# Compiled translations (commit .po, not .mo)
+*.mo
+
+# Static files collected by collectstatic
+staticfiles/
+static_root/

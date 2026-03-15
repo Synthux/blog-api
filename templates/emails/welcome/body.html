@@ -1,0 +1,9 @@
+{% load i18n %}
+<!DOCTYPE html>
+<html>
+<body>
+    <h1>{% blocktrans with name=user.first_name %}Hello, {{ name }}!{% endblocktrans %}</h1>
+    <p>{% blocktrans %}Thank you for registering. Your account is now active.{% endblocktrans %}</p>
+    <p>{% blocktrans %}Start exploring the Blog API today.{% endblocktrans %}</p>
+</body>
+</html>

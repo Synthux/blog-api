@@ -1,22 +1,54 @@
+import asyncio
 import json
 import logging
+
+import httpx
 import redis
+from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.core.cache import cache
-from django_ratelimit.decorators import ratelimit
+from django.http import JsonResponse
 from django.utils.decorators import method_decorator
-from rest_framework import viewsets, permissions, status, filters
-from rest_framework.decorators import action
-from rest_framework.response import Response
+from django.utils.translation import get_language
+from django.views import View
+from django_ratelimit.decorators import ratelimit
+from drf_spectacular.utils import (
+    OpenApiExample,
+    OpenApiParameter,
+    OpenApiResponse,
+    extend_schema,
+)
+from rest_framework import filters, permissions, status, viewsets
+from rest_framework.decorators import action, api_view
 from rest_framework.pagination import PageNumberPagination
+from rest_framework.response import Response
 
-from .models import Post, Comment, Category, Tag
-from .serializers import PostSerializer, CommentSerializer
+from .constants import (
+    REDIS_COMMENTS_CHANNEL,
+    REDIS_POSTS_CACHE_KEY,
+    REDIS_POSTS_CACHE_TTL,
+    PostStatus,
+)
+from .models import Category, Comment, Post, Tag
 from .permissions import IsOwnerOrReadOnly
-from .constants import REDIS_POSTS_CACHE_KEY, REDIS_POSTS_CACHE_TTL, REDIS_COMMENTS_CHANNEL, PostStatus
+from .serializers import CommentSerializer, PostSerializer
 
 logger = logging.getLogger('blog')
 redis_client = redis.StrictRedis.from_url(settings.REDIS_URL)
+
+def _get_cache_key(request=None) -> str:
+    """Cache key includes language so each language gets its own cached response."""
+    lang = get_language() or 'en'
+    return f'{REDIS_POSTS_CACHE_KEY}_{lang}'
+
+
+def _invalidate_all_caches() -> None:
+    """Invalidate cache for all supported languages when any post is written."""
+    from apps.core.middleware import SUPPORTED_LANGUAGES
+    for lang in SUPPORTED_LANGUAGES:
+        cache.delete(f'{REDIS_POSTS_CACHE_KEY}_{lang}')
+    logger.info('All language caches invalidated')
+
 
 class PostViewSet(viewsets.ModelViewSet):
     """
@@ -37,47 +69,86 @@ class PostViewSet(viewsets.ModelViewSet):
             return Post.objects.filter(status=PostStatus.PUBLISHED) | Post.objects.filter(author=user)
         return Post.objects.filter(status=PostStatus.PUBLISHED)
 
-    def perform_create(self, serializer):
+    def perform_create(self, serializer) -> None:
         serializer.save(author=self.request.user)
-        # Invalidate cache on create
-        cache.delete(REDIS_POSTS_CACHE_KEY)
-        logger.info("Cache invalidated due to new post creation")
+        _invalidate_all_caches()
 
-    def perform_update(self, serializer):
+    def perform_update(self, serializer) -> None:
         serializer.save()
-        # Invalidate cache on update
-        cache.delete(REDIS_POSTS_CACHE_KEY)
-        logger.info("Cache invalidated due to post update")
+        _invalidate_all_caches()
 
-    def perform_destroy(self, instance):
+    def perform_destroy(self, instance) -> None:
         instance.delete()
-        # Invalidate cache on delete
-        cache.delete(REDIS_POSTS_CACHE_KEY)
-        logger.info("Cache invalidated due to post deletion")
+        _invalidate_all_caches()
+    
+    @extend_schema(
+        summary='Create a post',
+        description='Creates a new post. Requires authentication. Rate-limited to 20/minute per user. Invalidates the Redis cache for all languages.',
+        responses={
+            201: PostSerializer,
+            400: OpenApiResponse(description='Validation errors'),
+            401: OpenApiResponse(description='Authentication required'),
+            429: OpenApiResponse(description='Too many requests'),
+        },
+    )
 
     # Rate Limit: 20 requests per minute per user for creating posts
     @method_decorator(ratelimit(key='user', rate='20/m', method='POST', block=True))
     def create(self, request, *args, **kwargs):
         return super().create(request, *args, **kwargs)
+    
+    @extend_schema(
+        summary='List published posts',
+        description=(
+            'Returns a paginated list of published posts. Responses are cached in Redis for 60 seconds, '
+            'independently per language. Cache is invalidated when any post is created or updated. '
+            'No authentication required.'
+        ),
+        parameters=[OpenApiParameter('lang', str, description='Override language: en, ru, kk')],
+        responses={200: PostSerializer(many=True), 429: OpenApiResponse(description='Too many requests')},
+    )
 
     def list(self, request, *args, **kwargs):
-        """
-        List posts with Redis caching (60 seconds).
-        """
-        # We only cache the default list view (no search params) for simplicity
+        cache_key = _get_cache_key(request)
         if not request.query_params:
-            cached_data = cache.get(REDIS_POSTS_CACHE_KEY)
+            cached_data = cache.get(cache_key)
             if cached_data:
-                logger.debug("Serving posts list from Redis cache")
+                logger.debug('Serving posts list from cache (lang=%s)', get_language())
                 return Response(cached_data)
 
         response = super().list(request, *args, **kwargs)
-        
+
         if not request.query_params:
-            cache.set(REDIS_POSTS_CACHE_KEY, response.data, REDIS_POSTS_CACHE_TTL)
-            logger.debug("Cached posts list to Redis")
-            
+            cache.set(cache_key, response.data, REDIS_POSTS_CACHE_TTL)
+            logger.debug('Cached posts list for lang=%s', get_language())
+
         return response
+    
+    @extend_schema(summary='Get a single post', responses={200: PostSerializer, 404: OpenApiResponse(description='Not found')})
+    def retrieve(self, request, *args, **kwargs):
+        return super().retrieve(request, *args, **kwargs)
+
+    @extend_schema(summary='Update own post', responses={200: PostSerializer, 403: OpenApiResponse(description='Not the author'), 404: OpenApiResponse(description='Not found')})
+    def partial_update(self, request, *args, **kwargs):
+        return super().partial_update(request, *args, **kwargs)
+
+    @extend_schema(summary='Delete own post', responses={204: None, 403: OpenApiResponse(description='Not the author')})
+    def destroy(self, request, *args, **kwargs):
+        return super().destroy(request, *args, **kwargs)
+
+    @extend_schema(
+        methods=['get'],
+        tags=['Comments'],
+        summary='List comments on a post',
+        responses={200: CommentSerializer(many=True)},
+    )
+    @extend_schema(
+        methods=['post'],
+        tags=['Comments'],
+        summary='Add a comment to a post',
+        description='Requires authentication. Publishes a JSON event to the Redis `comments` channel: {post_slug, author_id, body}.',
+        responses={201: CommentSerializer, 401: OpenApiResponse(description='Authentication required')},
+    )
 
     @action(detail=True, methods=['get', 'post'], permission_classes=[permissions.IsAuthenticatedOrReadOnly])
     def comments(self, request, slug=None):
@@ -102,6 +173,8 @@ class PostViewSet(viewsets.ModelViewSet):
                 
                 # Pub/Sub: Publish event to Redis
                 message = {
+                    'post_slug': post.slug,
+                    'author_id': request.user.id,
                     'event': 'new_comment',
                     'post_title': post.title,
                     'author': request.user.email,
@@ -113,3 +186,58 @@ class PostViewSet(viewsets.ModelViewSet):
                 return Response(serializer.data, status=status.HTTP_201_CREATED)
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+
+class StatsView(View):
+    """
+    Async view: two external HTTP calls (exchange rates + current time) run
+    concurrently via asyncio.gather. If written synchronously, the total response
+    time would be the sum of both calls; async makes it the max of the two.
+    """
+
+    @extend_schema(
+        tags=['Stats'],
+        summary='Blog statistics with live exchange rates and Almaty time',
+        description=(
+            'Fetches blog counts from the database, then concurrently requests '
+            'USD exchange rates from open.er-api.com and current Almaty time from '
+            'timeapi.io using asyncio.gather. No authentication required.'
+        ),
+        responses={200: OpenApiResponse(description='Stats object')},
+    )
+    async def get(self, request) -> JsonResponse:
+        from apps.users.models import User
+
+        total_posts = await sync_to_async(
+            Post.objects.filter(status=PostStatus.PUBLISHED).count
+        )()
+        total_comments = await sync_to_async(Comment.objects.count)()
+        total_users = await sync_to_async(User.objects.count)()
+
+        exchange_rates, current_time = await asyncio.gather(
+            self._fetch_exchange_rates(),
+            self._fetch_current_time(),
+        )
+
+        return JsonResponse({
+            'blog': {
+                'total_posts': total_posts,
+                'total_comments': total_comments,
+                'total_users': total_users,
+            },
+            'exchange_rates': exchange_rates,
+            'current_time': current_time,
+        })
+
+    async def _fetch_exchange_rates(self) -> dict:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get('https://open.er-api.com/v6/latest/USD')
+            rates = resp.json().get('rates', {})
+            return {key: rates.get(key) for key in ('KZT', 'RUB', 'EUR')}
+
+    async def _fetch_current_time(self) -> str:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                'https://timeapi.io/api/time/current/zone',
+                params={'timeZone': 'Asia/Almaty'},
+            )
+            return resp.json().get('dateTime', '')

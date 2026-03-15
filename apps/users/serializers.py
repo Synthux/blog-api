@@ -1,9 +1,14 @@
 import logging
 
+import pytz
+from django.utils.translation import gettext_lazy as _
 from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import User
+
+VALID_LANGUAGES = ['en', 'ru', 'kk']
+
 
 logger = logging.getLogger('users')
 
@@ -56,3 +61,25 @@ class RegisterSerializer(serializers.ModelSerializer):
             'refresh': str(refresh),
             'access': str(refresh.access_token),
         }
+
+
+class LanguageSerializer(serializers.Serializer):
+    language = serializers.CharField()
+
+    def validate_language(self, value: str) -> str:
+        if value not in VALID_LANGUAGES:
+            raise serializers.ValidationError(
+                _('Unsupported language. Choose from %(langs)s') % {'langs': ', '.join(VALID_LANGUAGES)}
+            )
+        return value
+
+
+class TimezoneSerializer(serializers.Serializer):
+    timezone = serializers.CharField()
+
+    def validate_timezone(self, value: str) -> str:
+        if value not in pytz.all_timezones_set:
+            raise serializers.ValidationError(
+                _('Invalid timezone. Provide a valid IANA timezone identifier (e.g. Asia/Almaty).')
+            )
+        return value

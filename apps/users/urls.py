@@ -4,10 +4,11 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from django_ratelimit.decorators import ratelimit
 from django.utils.decorators import method_decorator
 
-from .views import AuthViewSet
+from .views import AuthViewSet, PreferencesViewSet
 
 router = DefaultRouter()
 router.register(r'register', AuthViewSet, basename='register')
+router.register(r'preferences', PreferencesViewSet, basename='preferences')
 
 # Rate-limited token views
 token_view = method_decorator(ratelimit(key='ip', rate='10/m', method='POST', block=True), name='dispatch')(TokenObtainPairView)

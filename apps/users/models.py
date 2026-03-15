@@ -1,8 +1,21 @@
 import logging
 
-from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
+import pytz
+from django.contrib.auth.models import (
+    AbstractBaseUser,
+    BaseUserManager,
+    PermissionsMixin,
+)
 from django.db import models
 from django.utils import timezone
+from django.utils.translation import gettext_lazy as _
+
+SUPPORTED_LANGUAGES = [
+    ('en', _('English')),
+    ('ru', _('Russian')),
+    ('kk', _('Kazakh')),
+]
+
 
 logger = logging.getLogger('users')
 
@@ -40,13 +53,27 @@ class CustomUserManager(BaseUserManager):
 class User(AbstractBaseUser, PermissionsMixin):
     """Custom user model with email as the primary identifier."""
     
-    email = models.EmailField(unique=True, max_length=255)
-    first_name = models.CharField(max_length=50)
-    last_name = models.CharField(max_length=50)
-    is_active = models.BooleanField(default=True)
-    is_staff = models.BooleanField(default=False)
-    date_joined = models.DateTimeField(default=timezone.now)
-    avatar = models.ImageField(upload_to='avatars/', blank=True, null=True)
+    email = models.EmailField(unique=True, max_length=255, verbose_name=_('email address'))
+    first_name = models.CharField(max_length=50, verbose_name=_('first name'))
+    last_name = models.CharField(max_length=50, verbose_name=_('last name'))
+    is_active = models.BooleanField(default=True, verbose_name=_('active'))
+    is_staff = models.BooleanField(default=False, verbose_name=_('staff status'))
+    date_joined = models.DateTimeField(default=timezone.now, verbose_name=_('date joined'))
+    avatar = models.ImageField(upload_to='avatars/', blank=True, null=True, verbose_name=_('avatar'))
+
+    preferred_language = models.CharField(
+        max_length=10,
+        choices=SUPPORTED_LANGUAGES,
+        default='en',
+        blank=True,
+        verbose_name=_('preferred language'),
+    )
+    timezone = models.CharField(
+        max_length=100,
+        default='UTC',
+        blank=True,
+        verbose_name=_('timezone'),
+    )
     
     objects = CustomUserManager()
     

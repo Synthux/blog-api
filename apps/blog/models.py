@@ -3,6 +3,7 @@ import logging
 from django.conf import settings
 from django.db import models
 from django.utils.text import slugify
+from django.utils.translation import gettext_lazy as _
 
 from .constants import PostStatus
 
@@ -12,20 +13,30 @@ logger = logging.getLogger('blog')
 class Category(models.Model):
     """Category model for organizing blog posts."""
     
-    name = models.CharField(max_length=100, unique=True)
-    slug = models.SlugField(unique=True, max_length=100)
+    slug = models.SlugField(unique=True, max_length=100, verbose_name=_('slug'))
+    name_en = models.CharField(max_length=100, verbose_name=_('name (English)'))
+    name_ru = models.CharField(max_length=100, blank=True, verbose_name=_('name (Russian)'))
+    name_kk = models.CharField(max_length=100, blank=True, verbose_name=_('name (Kazakh)'))
     
     class Meta:
-        verbose_name_plural = 'categories'
-        ordering = ['name']
-    
+        verbose_name = _('category')
+        verbose_name_plural = _('categories')
+        ordering = ['name_en']
+
     def __str__(self) -> str:
-        return self.name
+        return self.get_translated_name()
+
+    def get_translated_name(self) -> str:
+        """Return category name in the currently active language."""
+        from django.utils.translation import get_language
+        lang = get_language() or 'en'
+        name = getattr(self, f'name_{lang}', '') or ''
+        return name if name else self.name_en
     
     def save(self, *args, **kwargs) -> None:
         """Auto-generate slug from name if not provided."""
         if not self.slug:
-            self.slug = slugify(self.name)
+            self.slug = slugify(self.name_en)
         super().save(*args, **kwargs)
 
 
