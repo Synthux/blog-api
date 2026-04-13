@@ -1,5 +1,5 @@
 from pathlib import Path
-from decouple import Config, RepositoryEnv
+from decouple import Config, RepositoryEnv, config as env_config
 
 # 1. Get the path to the 'settings' folder
 SETTINGS_DIR = Path(__file__).resolve().parent
@@ -12,8 +12,11 @@ if not ENV_PATH.exists():
         "Please create it and add your BLOG_SECRET_KEY."
     )
 
-# 3. Initialize config to read specifically from settings/.env
-config = Config(RepositoryEnv(ENV_PATH))
+# 3. Use .env file if it exists (local dev), otherwise read from environment (Docker/CI)
+if ENV_PATH.exists():
+    config = Config(RepositoryEnv(ENV_PATH))
+else:
+    config = env_config
 
 # --- Read variables ---
 
@@ -32,3 +35,10 @@ DB_PORT = config('BLOG_DB_PORT', default='5432')
 
 # Redis
 REDIS_URL = config('BLOG_REDIS_URL', default='redis://localhost:6379/0')
+
+# Celery
+CELERY_BROKER_URL = config('BLOG_CELERY_BROKER_URL', default='redis://localhost:6379/1')
+
+# Flower
+FLOWER_USER = config('BLOG_FLOWER_USER', default='admin')
+FLOWER_PASSWORD = config('BLOG_FLOWER_PASSWORD', default='changeme')

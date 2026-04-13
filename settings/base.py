@@ -15,6 +15,7 @@ REDIS_URL = conf.REDIS_URL
 AUTH_USER_MODEL = 'users.User'
 
 INSTALLED_APPS = [
+    'daphne',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -26,11 +27,13 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt',
     'drf_spectacular',
+    'channels',
     
     # Local apps
     'apps.users',
     'apps.blog',
     'apps.core',
+    'apps.notifications',
 ]
 
 MIDDLEWARE = [
@@ -197,3 +200,26 @@ LOGGING = {
         },
     },
 }
+
+# Django Channels
+ASGI_APPLICATION = 'settings.asgi.application'
+
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            'hosts': [conf.REDIS_URL], # Uses db 0, same as cache
+        },
+    },
+}
+
+# Celery
+CELERY_BROKER_URL = conf.CELERY_BROKER_URL
+CELERY_RESULT_BACKEND = conf.CELERY_BROKER_URL
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = TIME_ZONE
+
+# Expose raw Redis URL
+BLOG_REDIS_URL = conf.REDIS_URL

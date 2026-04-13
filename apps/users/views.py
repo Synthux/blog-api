@@ -9,13 +9,11 @@ from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from .emails import send_welcome_email
-from .models import User
+from .tasks import send_welcome_email_task
 from .serializers import (
     LanguageSerializer,
     RegisterSerializer,
     TimezoneSerializer,
-    UserSerializer,
 )
 
 logger = logging.getLogger('users')
@@ -75,7 +73,8 @@ class AuthViewSet(viewsets.GenericViewSet):
         try:
             serializer.is_valid(raise_exception=True)
             user = serializer.save()
-            send_welcome_email(user)
+            # Fire welcome email asynchronously — does not block the response
+            send_welcome_email_task.delay(user.id)
             logger.info('User registered: %s', user.email)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         except Exception as e:

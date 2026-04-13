@@ -71,6 +71,12 @@ class Post(models.Model):
     status = models.CharField(max_length=10, choices=PostStatus.choices, default=PostStatus.DRAFT)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    publish_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_('publish at'),
+        help_text=_('Set together with status=scheduled to auto-publish at this time.'),
+        )
     
     class Meta:
         ordering = ['-created_at']

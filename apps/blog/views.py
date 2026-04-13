@@ -4,22 +4,23 @@ import logging
 
 import httpx
 import redis
+import redis.asyncio as aioredis
 from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.core.cache import cache
 from django.http import JsonResponse
+from django.http import StreamingHttpResponse
 from django.utils.decorators import method_decorator
 from django.utils.translation import get_language
 from django.views import View
 from django_ratelimit.decorators import ratelimit
 from drf_spectacular.utils import (
-    OpenApiExample,
     OpenApiParameter,
     OpenApiResponse,
     extend_schema,
 )
 from rest_framework import filters, permissions, status, viewsets
-from rest_framework.decorators import action, api_view
+from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 
@@ -29,12 +30,15 @@ from .constants import (
     REDIS_POSTS_CACHE_TTL,
     PostStatus,
 )
-from .models import Category, Comment, Post, Tag
-from .permissions import IsOwnerOrReadOnly
+from .models import Comment, Post
 from .serializers import CommentSerializer, PostSerializer
+from .permissions import IsOwnerOrReadOnly
+from apps.blog.tasks import invalidate_posts_cache
+from apps.notifications.tasks import process_new_comment
 
 logger = logging.getLogger('blog')
 redis_client = redis.StrictRedis.from_url(settings.REDIS_URL)
+
 
 def _get_cache_key(request=None) -> str:
     """Cache key includes language so each language gets its own cached response."""
@@ -48,6 +52,42 @@ def _invalidate_all_caches() -> None:
     for lang in SUPPORTED_LANGUAGES:
         cache.delete(f'{REDIS_POSTS_CACHE_KEY}_{lang}')
     logger.info('All language caches invalidated')
+
+
+def _publish_post_sse_event(post) -> None:
+    """Publish a post-published event to Redis for all connected SSE clients."""
+    client = redis.from_url(settings.BLOG_REDIS_URL)
+    event = {
+        'post_id': post.id,
+        'title': post.title,
+        'slug': post.slug,
+        'author': {'id': post.author.id, 'email': post.author.email},
+        'published_at': post.updated_at.isoformat(),
+    }
+    client.publish('post_published', json.dumps(event))
+    logger.info('SSE event published for post: %s', post.slug)
+
+
+async def post_stream(request):
+    """SSE endpoint — streams newly published posts to all connected clients."""
+    
+    async def event_generator():
+        client = aioredis.from_url(settings.BLOG_REDIS_URL, decode_responses=True)
+        pubsub = client.pubsub()
+        await pubsub.subscribe('post_published')
+        yield 'data: {"type": "connected"}\n\n'
+        try:
+            async for message in pubsub.listen():
+                if message['type'] == 'message':
+                    yield f'data: {message["data"]}\n\n'
+        finally:
+            await pubsub.close()
+            await client.aclose()
+
+    response = StreamingHttpResponse(event_generator(), content_type='text/event-stream')
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'
+    return response
 
 
 class PostViewSet(viewsets.ModelViewSet):
@@ -70,16 +110,24 @@ class PostViewSet(viewsets.ModelViewSet):
         return Post.objects.filter(status=PostStatus.PUBLISHED)
 
     def perform_create(self, serializer) -> None:
-        serializer.save(author=self.request.user)
-        _invalidate_all_caches()
+        instance = serializer.save(author=self.request.user)
+        # Dispatch cache invalidation as async Celery task
+        invalidate_posts_cache.delay()
+        # Fire SSE event if the post is immediately published
+        if instance.status == PostStatus.PUBLISHED:
+            _publish_post_sse_event(instance)
 
     def perform_update(self, serializer) -> None:
-        serializer.save()
-        _invalidate_all_caches()
+        old_status = serializer.instance.status
+        instance = serializer.save()
+        invalidate_posts_cache.delay()
+        # Fire SSE event only when transitioning to published
+        if old_status != PostStatus.PUBLISHED and instance.status == PostStatus.PUBLISHED:
+            _publish_post_sse_event(instance)
 
     def perform_destroy(self, instance) -> None:
         instance.delete()
-        _invalidate_all_caches()
+        invalidate_posts_cache.delay()
     
     @extend_schema(
         summary='Create a post',
@@ -180,7 +228,8 @@ class PostViewSet(viewsets.ModelViewSet):
                     'author': request.user.email,
                     'body': serializer.data['body']
                 }
-                redis_client.publish(REDIS_COMMENTS_CHANNEL, json.dumps(message))
+                # Dispatch all comment side-effects (notification + WebSocket push) to Celery
+                process_new_comment.delay(message.id)
                 logger.info("Published new comment event to Redis channel: %s", REDIS_COMMENTS_CHANNEL)
                 
                 return Response(serializer.data, status=status.HTTP_201_CREATED)

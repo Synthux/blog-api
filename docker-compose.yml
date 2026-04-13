@@ -1,0 +1,63 @@
+version: '3.9'
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  web:
+    build: .
+    env_file:
+      - settings/.env
+    ports:
+      - "8000:8000"
+    volumes:
+      - sqlite_data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: daphne -b 0.0.0.0 -p 8000 settings.asgi:application
+
+  celery_worker:
+    build: .
+    env_file:
+      - settings/.env
+    volumes:
+      - sqlite_data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: celery -A settings worker -l info
+
+  celery_beat:
+    build: .
+    env_file:
+      - settings/.env
+    volumes:
+      - sqlite_data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: celery -A settings beat -l info
+
+  flower:
+    build: .
+    env_file:
+      - settings/.env
+    ports:
+      - "5555:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: >
+      celery -A settings flower
+      --basic_auth=${BLOG_FLOWER_USER}:${BLOG_FLOWER_PASSWORD}
+
+volumes:
+  sqlite_data:

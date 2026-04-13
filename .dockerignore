@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+env/
+venv/
+.venv/
+
+# Django
+*.log
+logs/
+data/
+media/
+staticfiles/
+static_root/
+
+# Git
+.git/
+.gitignore
+
+# Environment secrets
+settings/.env
+
+# Compiled translations
+*.mo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Docker files themselves (no need to copy into image)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Docs
+docs/
+README.md
