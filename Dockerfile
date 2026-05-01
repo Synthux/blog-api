@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y \
 # Create a non-root user for security
 RUN useradd --create-home --shell /bin/bash appuser
 
-WORKDIR /app
+WORKDIR /blog-api
 
 # Install Python dependencies first (layer-cache friendly)
 COPY requirements/ requirements/
@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir -r requirements/base.txt
 COPY . .
 
 # Create the data directory for SQLite persistence
-RUN mkdir -p /app/data && chown appuser:appuser /app/data
+RUN mkdir -p /blog-api/data && chown appuser:appuser /blog-api/data
 
 # Make entrypoint executable
 RUN chmod +x scripts/entrypoint.sh

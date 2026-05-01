@@ -9,7 +9,7 @@ if __name__ == '__main__':
     BASE_DIR = Path(__file__).resolve().parent
     env_file = BASE_DIR / 'settings' / '.env'
     
-    env_id = config('BLOG_ENV_ID', default='local')
+    env_id = config('BLOG_ENV_ID', default='prod')
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', f'settings.env.{env_id}')
     
     try:
